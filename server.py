@@ -310,49 +310,73 @@ def compare_closes(symbols: list[str], weeks: int = 12) -> str:
     return "\n".join(body)
 
 
-def _run_http(host: str, port: int, token: str | None) -> None:
-    """รันเป็น HTTP server พร้อมตรวจ bearer token
+def _run_http(host: str, port: int, token: str | None, url_token: str | None) -> None:
+    """รันเป็น HTTP server
 
-    เซิร์ฟเวอร์นี้อ่านข้อมูลราคาสาธารณะอย่างเดียว ไม่มีคำสั่งเขียนอะไรทั้งนั้น
-    แต่ยังต้องมี token กันไว้ ไม่งั้นใครเจอ URL ก็ยิงให้เราโดนจำกัดโควตาได้
+    มี 2 วิธีป้องกัน เลือกใช้ตามว่า client ส่งอะไรได้:
+
+    url_token (แนะนำ) — ความลับอยู่ใน URL: https://host/<url_token>/mcp
+        สำหรับ client ที่กรอกได้แค่ URL อย่างเดียว เช่นหน้า Add custom connector
+        ของ Claude ที่มีแค่ช่อง Name กับ URL ไม่มีที่ใส่ header
+    token — bearer token ใน header Authorization
+        สำหรับ client ที่ส่ง header เองได้ เช่น curl หรือสคริปต์
+
+    เซิร์ฟเวอร์นี้อ่านข้อมูลราคาสาธารณะแล้ววาดกราฟอย่างเดียว ไม่มีคำสั่งเขียน
+    ความลับจึงมีไว้กันการถูกยิงรัวจนโดนจำกัดโควตา มากกว่ากันข้อมูลรั่ว
     """
     import uvicorn
+    from starlette.applications import Starlette
     from starlette.middleware.base import BaseHTTPMiddleware
     from starlette.responses import JSONResponse
-    from starlette.routing import Route
+    from starlette.routing import Mount, Route
 
-    app = mcp.streamable_http_app()
+    inner = mcp.streamable_http_app()
 
-    # จุดตรวจสุขภาพสำหรับผู้ให้บริการโฮสต์ (Render ฯลฯ)
-    # ต้องแยกจาก /mcp เพราะ /mcp ตอบ 401 เมื่อไม่มี token
+    # จุดตรวจสุขภาพสำหรับผู้ให้บริการโฮสต์ (Render ฯลฯ) — ต้องเปิดโล่งและอยู่ที่ราก
+    # ถ้าเอา path ที่ต้องมีความลับไปเป็น health check ผู้ให้บริการจะเห็น 401/404
+    # แล้วคิดว่าเซิร์ฟเวอร์ตาย → รีสตาร์ตวนไม่จบ
     async def health(_request):
         return JSONResponse({"status": "ok", "server": "thai-chart"})
 
-    app.router.routes.append(Route("/health", health, methods=["GET"]))
-
-    if token:
-        class BearerAuth(BaseHTTPMiddleware):
-            async def dispatch(self, request, call_next):
-                if request.url.path in ("/health", "/healthz"):
-                    return await call_next(request)
-                header = request.headers.get("authorization", "")
-                supplied = header[7:] if header.lower().startswith("bearer ") else ""
-                # เทียบแบบ constant-time กัน timing attack
-                import hmac
-                if not hmac.compare_digest(supplied, token):
-                    return JSONResponse({"error": "unauthorized"}, status_code=401)
-                return await call_next(request)
-
-        app.add_middleware(BearerAuth)
-        print(f"[auth] เปิดการตรวจ bearer token แล้ว", flush=True)
-    else:
-        print(
-            "[auth] ⚠️  ไม่ได้ตั้ง token — ใครก็เรียกได้\n"
-            "        ตั้งด้วย --token <ค่า> หรือ environment variable THAI_CHART_TOKEN",
-            flush=True,
+    if url_token:
+        # ซ่อน MCP ไว้ใต้ path ลับ — ใครไม่รู้ path ก็ได้ 404 ธรรมดา
+        app = Starlette(
+            routes=[
+                Route("/health", health, methods=["GET"]),
+                Mount(f"/{url_token}", app=inner),
+            ],
+            lifespan=lambda _app: inner.router.lifespan_context(inner),
         )
+        shown = url_token[:4] + "…" + url_token[-2:] if len(url_token) > 8 else "…"
+        print(f"[auth] ใช้ token ใน URL (ขึ้นต้น {shown})", flush=True)
+        print(f"[serve] http://{host}:{port}/{url_token}/mcp", flush=True)
+    else:
+        app = inner
+        app.router.routes.append(Route("/health", health, methods=["GET"]))
 
-    print(f"[serve] http://{host}:{port}/mcp", flush=True)
+        if token:
+            class BearerAuth(BaseHTTPMiddleware):
+                async def dispatch(self, request, call_next):
+                    if request.url.path in ("/health", "/healthz"):
+                        return await call_next(request)
+                    header = request.headers.get("authorization", "")
+                    supplied = header[7:] if header.lower().startswith("bearer ") else ""
+                    # เทียบแบบ constant-time กัน timing attack
+                    import hmac
+                    if not hmac.compare_digest(supplied, token):
+                        return JSONResponse({"error": "unauthorized"}, status_code=401)
+                    return await call_next(request)
+
+            app.add_middleware(BearerAuth)
+            print("[auth] ตรวจ bearer token ใน header", flush=True)
+        else:
+            print(
+                "[auth] ⚠️  ไม่ได้ตั้งความลับใด ๆ — ใครก็เรียกได้\n"
+                "        ตั้งด้วย THAI_CHART_URL_TOKEN (แนะนำ) หรือ THAI_CHART_TOKEN",
+                flush=True,
+            )
+        print(f"[serve] http://{host}:{port}/mcp", flush=True)
+
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 
@@ -364,12 +388,18 @@ def main() -> None:
     p.add_argument(
         "--token",
         default=os.environ.get("THAI_CHART_TOKEN"),
-        help="bearer token สำหรับโหมด --http (หรือใช้ env THAI_CHART_TOKEN)",
+        help="bearer token ใน header Authorization (หรือ env THAI_CHART_TOKEN)",
+    )
+    p.add_argument(
+        "--url-token",
+        default=os.environ.get("THAI_CHART_URL_TOKEN"),
+        help="ความลับใน URL: /<url-token>/mcp — ใช้กับ client ที่กรอกได้แค่ URL "
+        "(หรือ env THAI_CHART_URL_TOKEN) มีผลเหนือ --token",
     )
     args = p.parse_args()
 
     if args.http:
-        _run_http(args.host, args.port, args.token)
+        _run_http(args.host, args.port, args.token, args.url_token)
     else:
         mcp.run()  # stdio — สำหรับ Claude Desktop บนเครื่องตัวเอง
 

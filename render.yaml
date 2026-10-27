@@ -3,9 +3,12 @@
 # วิธีใช้: ไปที่ render.com → New → Blueprint → เลือก repo นี้
 # Render จะอ่านไฟล์นี้แล้วตั้งค่าให้เอง
 #
-# ⚠️ THAI_CHART_TOKEN ตั้งเป็น generateValue: true
-#    = Render สุ่มค่าให้เองและเก็บเป็นความลับ ไม่โผล่ในโค้ด
-#    ไปคัดลอกค่าได้ที่หน้า service → Environment หลัง deploy เสร็จ
+# ⚠️ THAI_CHART_URL_TOKEN คือความลับที่อยู่ใน URL: https://<host>/<token>/mcp
+#    ใช้แบบนี้เพราะหน้า Add custom connector ของ Claude มีแค่ช่อง Name กับ URL
+#    ไม่มีที่ให้ใส่ header จึงส่ง bearer token ไปไม่ได้
+#
+#    ต้องตั้งค่าเองที่แท็บ Environment ด้วยค่าที่ปลอดภัยกับ URL (ไม่มี / + =)
+#    สร้างด้วย:  python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 
 services:
   - type: web
@@ -14,7 +17,7 @@ services:
     plan: free
     healthCheckPath: /health
     envVars:
-      - key: THAI_CHART_TOKEN
-        generateValue: true
-      - key: PORT
+      - key: THAI_CHART_URL_TOKEN
+        sync: false          # ตั้งเองในแท็บ Environment — ห้าม generateValue
+      - key: PORT            # generateValue สร้าง base64 ที่มี / + = ซึ่งพัง URL
         value: 8000
