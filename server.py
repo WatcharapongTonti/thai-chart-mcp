@@ -319,8 +319,16 @@ def _run_http(host: str, port: int, token: str | None) -> None:
     import uvicorn
     from starlette.middleware.base import BaseHTTPMiddleware
     from starlette.responses import JSONResponse
+    from starlette.routing import Route
 
     app = mcp.streamable_http_app()
+
+    # จุดตรวจสุขภาพสำหรับผู้ให้บริการโฮสต์ (Render ฯลฯ)
+    # ต้องแยกจาก /mcp เพราะ /mcp ตอบ 401 เมื่อไม่มี token
+    async def health(_request):
+        return JSONResponse({"status": "ok", "server": "thai-chart"})
+
+    app.router.routes.append(Route("/health", health, methods=["GET"]))
 
     if token:
         class BearerAuth(BaseHTTPMiddleware):

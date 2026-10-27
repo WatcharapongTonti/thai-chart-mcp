@@ -12,7 +12,7 @@ services:
     name: thai-chart-mcp
     runtime: docker
     plan: free
-    healthCheckPath: /mcp
+    healthCheckPath: /health
     envVars:
       - key: THAI_CHART_TOKEN
         generateValue: true
