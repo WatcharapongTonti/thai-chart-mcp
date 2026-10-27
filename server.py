@@ -325,12 +325,35 @@ def _run_http(host: str, port: int, token: str | None, url_token: str | None) ->
     ความลับจึงมีไว้กันการถูกยิงรัวจนโดนจำกัดโควตา มากกว่ากันข้อมูลรั่ว
     """
     import uvicorn
+    from mcp.server.transport_security import TransportSecuritySettings
     from starlette.applications import Starlette
     from starlette.middleware.base import BaseHTTPMiddleware
     from starlette.responses import JSONResponse
     from starlette.routing import Mount, Route
 
-    inner = mcp.streamable_http_app()
+    # MCP SDK เปิด DNS rebinding protection ไว้โดยค่าเริ่มต้น และ allowed_hosts ว่าง
+    # = ปฏิเสธทุก Host ที่ไม่ใช่ localhost ด้วย 421 Misdirected Request
+    # เบื้องหลัง reverse proxy ของผู้ให้บริการ Host จะเป็นโดเมนจริง จึงต้องบอกให้รู้จัก
+    allowed = [h.strip() for h in (os.environ.get("THAI_CHART_ALLOWED_HOSTS") or "").split(",") if h.strip()]
+    if allowed:
+        security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=allowed,
+            allowed_origins=[f"https://{h}" for h in allowed] + [f"http://{h}" for h in allowed],
+        )
+        print(f"[security] จำกัด Host ไว้ที่: {', '.join(allowed)}", flush=True)
+    else:
+        # DNS rebinding protection มีไว้กันหน้าเว็บในเบราว์เซอร์ยิงเซิร์ฟเวอร์ที่ผูกกับ localhost
+        # เซิร์ฟเวอร์สาธารณะหลัง HTTPS ไม่ได้อยู่ในสถานการณ์นั้น และของจริงที่ป้องกันเราคือ
+        # ความลับใน URL — คนที่ไม่รู้ path ก็เรียกไม่ได้อยู่ดี ไม่ว่า Host จะเป็นอะไร
+        security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+        print(
+            "[security] ปิด DNS rebinding protection (ยอมรับทุก Host)\n"
+            "           ถ้าต้องการจำกัด ตั้ง THAI_CHART_ALLOWED_HOSTS=yourhost.onrender.com",
+            flush=True,
+        )
+
+    inner = mcp.streamable_http_app(transport_security=security)
 
     # จุดตรวจสุขภาพสำหรับผู้ให้บริการโฮสต์ (Render ฯลฯ) — ต้องเปิดโล่งและอยู่ที่ราก
     # ถ้าเอา path ที่ต้องมีความลับไปเป็น health check ผู้ให้บริการจะเห็น 401/404
