@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: ติดตั้ง dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: ทดสอบการวาดกราฟ (ข้อมูลจำลอง ไม่ต่อเน็ต)
+        run: python test_render.py
+
+      - name: ทดสอบว่า MCP ลงทะเบียนเครื่องมือครบ
+        run: |
+          python - <<'PY'
+          import asyncio
+          from server import mcp
+          names = {t.name for t in asyncio.run(mcp.list_tools())}
+          expected = {"weekly_chart", "weekly_table", "compare_closes"}
+          assert names == expected, f"เครื่องมือไม่ครบ: {names}"
+          print("เครื่องมือครบ:", sorted(names))
+          PY
+
+      - name: ทดสอบว่า weekly_chart ส่งภาพผ่าน MCP ได้จริง
+        # กันบั๊กเดิมไม่ให้กลับมา — SDK 2.x serialize Image ใน list ไม่ได้
+        run: |
+          python - <<'PY'
+          import asyncio, base64
+          import numpy as np, pandas as pd
+          import server
+
+          rng = np.random.default_rng(1); n = 252 * 5
+          close = 30 * np.exp(np.cumsum(rng.normal(0.0009, 0.016, n)))
+          idx = pd.bdate_range(end="2026-10-27", periods=n)
+          server._fetch_daily = lambda s, y: pd.DataFrame({
+              "Open": close, "High": close * 1.01, "Low": close * 0.99,
+              "Close": close, "Volume": rng.integers(5e6, 4e7, n).astype(float),
+          }, index=idx)
+
+          async def main():
+              res = await server.mcp.call_tool("weekly_chart", {"symbol": "TOP", "levels": [70, 66]})
+              blocks = res[0] if isinstance(res, tuple) else res
+              found = False
+              for b in blocks:
+                  item = b[1] if isinstance(b, tuple) else b
+                  for c in (item if isinstance(item, list) else [item]):
+                      if getattr(c, "type", None) == "image":
+                          raw = base64.b64decode(c.data)
+                          assert raw[:8] == b"\x89PNG\r\n\x1a\n", "ไม่ใช่ไฟล์ PNG"
+                          print(f"ได้ภาพ PNG {len(raw):,} bytes")
+                          found = True
+              assert found, "weekly_chart ไม่ได้ส่งภาพกลับมา"
+
+          asyncio.run(main())
+          PY
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: ทดสอบ build Docker image
+        run: docker build -t thai-chart-mcp:ci .

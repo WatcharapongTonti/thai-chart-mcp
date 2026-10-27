@@ -1,0 +1,20 @@
+# Deploy ไป Render จาก GitHub repo นี้
+#
+# วิธีใช้: ไปที่ render.com → New → Blueprint → เลือก repo นี้
+# Render จะอ่านไฟล์นี้แล้วตั้งค่าให้เอง
+#
+# ⚠️ THAI_CHART_TOKEN ตั้งเป็น generateValue: true
+#    = Render สุ่มค่าให้เองและเก็บเป็นความลับ ไม่โผล่ในโค้ด
+#    ไปคัดลอกค่าได้ที่หน้า service → Environment หลัง deploy เสร็จ
+
+services:
+  - type: web
+    name: thai-chart-mcp
+    runtime: docker
+    plan: free
+    healthCheckPath: /mcp
+    envVars:
+      - key: THAI_CHART_TOKEN
+        generateValue: true
+      - key: PORT
+        value: 8000
